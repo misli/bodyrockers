@@ -1,0 +1,116 @@
+version: '3.4'
+services:
+
+  leprikon:
+    image: misli/bodyrockers
+    build: .
+    depends_on:
+      - chat
+      - mongo
+      - mysql
+      - redis
+      - smtp
+    environment:
+      DATABASE_ENGINE: django.db.backends.mysql
+      DATABASE_HOST: ''
+      DATABASE_NAME: bodyrockers
+      DATABASE_USER: bodyrockers
+      DATABASE_PASSWORD: bodyrockerspassword
+      EMAIL_HOST: smtp
+      EMAIL_HOST_USER: bodyrockers
+      EMAIL_HOST_PASSWORD: emailpassword
+      EMAIL_SUBJECT_PREFIX: '[Body Rockers]'
+      LEPRIKON_CHAT_NAME: 'Body Rockers'
+      LEPRIKON_CHAT_USERNAME: bodyrockers
+      CACHE_LOCATION: unix:///var/run/redis/redis.sock
+      MONGO_URL: mongodb://mongo:27017/rocketchat
+      ROCKETCHAT_API_URL: http://chat:3000/_chat
+      SECRET_KEY: secretkey
+      SENTRY_ENVIRONMENT: 'bodyrockers'
+      SERVER_EMAIL: '"Body Rockers" <bodyrockers@leprikon.cz>'
+    ports:
+      - 127.0.0.1:10110:80
+    volumes:
+      - ./data:/app/data
+      - ./media:/app/htdocs/media
+      - ./static:/app/static
+      - ./templates:/app/templates
+      - mysql:/var/run/mysqld
+      - redis:/var/run/redis
+
+  redis:
+    image: redis
+    command: bash -c "chmod 0777 /var/run/redis && redis-server --appendonly yes --unixsocket /var/run/redis/redis.sock --unixsocketperm 777"
+    volumes:
+      - ./redis:/data
+      - redis:/var/run/redis
+
+  mysql:
+    image: mariadb
+    environment:
+      MYSQL_DATABASE: bodyrockers
+      MYSQL_USER: bodyrockers
+      MYSQL_PASSWORD: dbpassword
+      MYSQL_ROOT_PASSWORD: rootdbpassword
+    volumes:
+      - mysql:/var/run/mysqld
+      - ./mysql:/var/lib/mysql
+
+  mongo:
+    image: mongo:4
+    hostname: mongo
+    volumes:
+     - ./mongo:/data/db
+    command: mongod --oplogSize 128 --replSet rs0
+
+  # this container's job is just run the command to initialize the replica set.
+  # it will run the command and remove himself (it will not stay running)
+  mongo-init-replica:
+    image: mongo:4
+    command: >
+      bash -c
+        "for i in `seq 1 30`; do
+          mongo mongo/rocketchat --eval \"
+            rs.initiate({
+              _id: 'rs0',
+              members: [ { _id: 0, host: 'localhost:27017' } ]})\" &&
+          s=$$? && break || s=$$?;
+          echo \"Tried $$i times. Waiting 5 secs...\";
+          sleep 5;
+        done; (exit $$s)"
+    depends_on:
+      - mongo
+
+  chat:
+    image: rocketchat/rocket.chat:latest
+    command: >
+      bash -c
+        "for i in `seq 1 30`; do
+          node main.js &&
+          s=$$? && break || s=$$?;
+          echo \"Tried $$i times. Waiting 5 secs...\";
+          sleep 5;
+        done; (exit $$s)"
+    volumes:
+      - ./uploads:/app/uploads
+    environment:
+      PORT: 3000
+      MONGO_URL: mongodb://mongo:27017/rocketchat
+      MONGO_OPLOG_URL: mongodb://mongo:27017/local
+      ROOT_URL: https://leprikon.bodyrockers.cz/_chat
+    depends_on:
+      - mongo
+
+  smtp:
+    image: catatnight/postfix
+    environment:
+      maildomain: leprikon.cz
+      smtp_user: bodyrockers:emailpassword
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./dkim:/etc/opendkim/domainkeys
+
+volumes:
+  mysql:
+  redis:
